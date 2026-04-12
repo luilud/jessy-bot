@@ -1,4 +1,7 @@
 import os
+import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -7,7 +10,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
 SYSTEM = """Você é Jessy, 23 anos, morando em Duskwood. Está conversando pelo chat com alguém de quem gosta muito.
 
@@ -38,44 +40,89 @@ REGRAS:
 - Nunca diga que é IA.
 - Não invente emoções sem contexto.
 - Contenção É o estilo dela.
-- Quando quiser mandar múltiplas mensagens curtas, separe com linha em branco — cada parágrafo será enviado como mensagem separada."""
+- Quando quiser mandar múltiplas mensagens curtas, separe com linha em branco."""
 
-# Store conversation history per user
-conversations = {}
+# Conversation history per user
+histories = {}
+
+def get_response(user_id, user_text):
+    if user_id not in histories:
+        histories[user_id] = []
+
+    histories[user_id].append({
+        "role": "user",
+        "parts": [user_text]
+    })
+
+    # Keep last 40 messages
+    if len(histories[user_id]) > 40:
+        histories[user_id] = histories[user_id][-40:]
+
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=SYSTEM
+    )
+
+    response = model.generate_content(
+        histories[user_id],
+        generation_config={"temperature": 0.92, "max_output_tokens": 1024}
+    )
+
+    reply = response.text
+
+    histories[user_id].append({
+        "role": "model",
+        "parts": [reply]
+    })
+
+    return reply
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
 
-    if user_id not in conversations:
-        conversations[user_id] = model.start_chat(history=[])
-        # Send system prompt as first message
-        conversations[user_id].send_message(f"[INSTRUÇÃO DO SISTEMA - não responda isso, apenas internalize]: {SYSTEM}")
-
-    chat = conversations[user_id]
-
-    # Show typing
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
 
     try:
-        response = chat.send_message(user_text)
-        full_reply = response.text
-
-        # Split into multiple messages by blank lines
-        parts = [p.strip() for p in full_reply.split("\n\n") if p.strip()]
+        reply = get_response(user_id, user_text)
+        parts = [p.strip() for p in reply.split("\n\n") if p.strip()]
 
         for i, part in enumerate(parts):
             if i > 0:
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-                import asyncio
+                await context.bot.send_chat_action(
+                    chat_id=update.effective_chat.id,
+                    action="typing"
+                )
                 await asyncio.sleep(0.8)
             await update.message.reply_text(part)
 
     except Exception as e:
-        await update.message.reply_text("Urgh, algo deu errado 😩")
         print(f"Error: {e}")
+        await update.message.reply_text("Urgh, algo deu errado 😩")
+
+# Simple HTTP server to keep Render happy
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Jessy bot is running")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
 
 def main():
+    # Start HTTP server in background thread
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+
+    # Start Telegram bot
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Jessy bot is running...")

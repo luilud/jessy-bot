@@ -1,10 +1,9 @@
 import os
-import asyncio
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import Updater, MessageHandler, Filters
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
@@ -42,7 +41,6 @@ REGRAS:
 - Contenção É o estilo dela.
 - Quando quiser mandar múltiplas mensagens curtas, separe com linha em branco."""
 
-# Conversation history per user
 histories = {}
 
 def get_response(user_id, user_text):
@@ -54,7 +52,6 @@ def get_response(user_id, user_text):
         "parts": [user_text]
     })
 
-    # Keep last 40 messages
     if len(histories[user_id]) > 40:
         histories[user_id] = histories[user_id][-40:]
 
@@ -77,11 +74,11 @@ def get_response(user_id, user_text):
 
     return reply
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_message(update, context):
     user_id = update.effective_user.id
     user_text = update.message.text
 
-    await context.bot.send_chat_action(
+    context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
     )
@@ -92,18 +89,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for i, part in enumerate(parts):
             if i > 0:
-                await context.bot.send_chat_action(
+                context.bot.send_chat_action(
                     chat_id=update.effective_chat.id,
                     action="typing"
                 )
-                await asyncio.sleep(0.8)
-            await update.message.reply_text(part)
+                time.sleep(0.8)
+            update.message.reply_text(part)
 
     except Exception as e:
         print(f"Error: {e}")
-        await update.message.reply_text("Urgh, algo deu errado 😩")
+        update.message.reply_text("Urgh, algo deu errado 😩")
 
-# Simple HTTP server to keep Render happy
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -118,15 +114,17 @@ def run_server():
     server.serve_forever()
 
 def main():
-    # Start HTTP server in background thread
     t = threading.Thread(target=run_server, daemon=True)
     t.start()
+    print("HTTP server started")
 
-    # Start Telegram bot
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    updater = Updater(TELEGRAM_TOKEN)
+    dp = updater.dispatcher
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
     print("Jessy bot is running...")
-    app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
-    main()
+    main() 

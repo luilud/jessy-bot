@@ -1,14 +1,12 @@
 import os
-import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai
+import requests
 from telegram.ext import Updater, MessageHandler, Filters
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
-genai.configure(api_key=GEMINI_KEY)
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
 
 SYSTEM = """Você é Jessy, 23 anos, morando em Duskwood. Está conversando pelo chat com alguém de quem gosta muito.
 
@@ -49,27 +47,30 @@ def get_response(user_id, user_text):
 
     histories[user_id].append({
         "role": "user",
-        "parts": [user_text]
+        "parts": [{"text": user_text}]
     })
 
     if len(histories[user_id]) > 40:
         histories[user_id] = histories[user_id][-40:]
 
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=SYSTEM
-    )
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": SYSTEM}]
+        },
+        "contents": histories[user_id],
+        "generationConfig": {
+            "temperature": 0.92,
+            "maxOutputTokens": 1024
+        }
+    }
 
-    response = model.generate_content(
-        histories[user_id],
-        generation_config={"temperature": 0.92, "max_output_tokens": 1024}
-    )
-
-    reply = response.text
+    response = requests.post(GEMINI_URL, json=payload)
+    data = response.json()
+    reply = data["candidates"][0]["content"]["parts"][0]["text"]
 
     histories[user_id].append({
         "role": "model",
-        "parts": [reply]
+        "parts": [{"text": reply}]
     })
 
     return reply
@@ -100,28 +101,10 @@ def handle_message(update, context):
         print(f"Error: {e}")
         update.message.reply_text("Urgh, algo deu errado 😩")
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Jessy bot is running")
-    def log_message(self, format, *args):
-        pass
-
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
-
 def main():
-    t = threading.Thread(target=run_server, daemon=True)
-    t.start()
-    print("HTTP server started")
-
     updater = Updater(TELEGRAM_TOKEN)
     dp = updater.dispatcher
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
     print("Jessy bot is running...")
     updater.start_polling()
     updater.idle()
